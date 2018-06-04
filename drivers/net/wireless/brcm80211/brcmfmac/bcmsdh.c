@@ -30,6 +30,8 @@
 #include <linux/platform_device.h>
 #include <linux/platform_data/brcmfmac-sdio.h>
 #include <linux/pm_runtime.h>
+#include <linux/reset.h>
+#include <linux/reset-controller.h>
 #include <linux/suspend.h>
 #include <linux/errno.h>
 #include <linux/module.h>
@@ -1011,6 +1013,14 @@ static int brcmf_sdiod_remove(struct brcmf_sdio_dev *sdiodev)
 	return 0;
 }
 
+static void brcmf_sdiod_host_fixup(struct mmc_host *host)
+{
+	/* runtime-pm powers off the device */
+	pm_runtime_forbid(host->parent);
+	/* avoid removal detection upon resume */
+	host->caps |= MMC_CAP_NONREMOVABLE;
+}
+
 static int brcmf_sdiod_probe(struct brcmf_sdio_dev *sdiodev)
 {
 	struct sdio_func *func;
@@ -1076,7 +1086,7 @@ static int brcmf_sdiod_probe(struct brcmf_sdio_dev *sdiodev)
 		ret = -ENODEV;
 		goto out;
 	}
-	pm_runtime_forbid(host->parent);
+	brcmf_sdiod_host_fixup(host);
 out:
 	if (ret)
 		brcmf_sdiod_remove(sdiodev);
@@ -1115,6 +1125,7 @@ static int brcmf_ops_sdio_probe(struct sdio_func *func,
 	struct brcmf_sdio_dev *sdiodev;
 	struct brcmf_bus *bus_if;
 
+	printk("brcmf_ops_sdio_probe\n");
 	brcmf_dbg(SDIO, "Enter\n");
 	brcmf_dbg(SDIO, "Class=%x\n", func->class);
 	brcmf_dbg(SDIO, "sdio vendor ID: 0x%04x\n", func->vendor);
@@ -1246,15 +1257,15 @@ static int brcmf_ops_sdio_suspend(struct device *dev)
 	brcmf_sdiod_freezer_on(sdiodev);
 	brcmf_sdio_wd_timer(sdiodev->bus, 0);
 
+	sdio_flags = MMC_PM_KEEP_POWER;
 	if (sdiodev->wowl_enabled) {
-		sdio_flags = MMC_PM_KEEP_POWER;
 		if (sdiodev->pdata->oob_irq_supported)
 			enable_irq_wake(sdiodev->pdata->oob_irq_nr);
 		else
-			sdio_flags = MMC_PM_WAKE_SDIO_IRQ;
-		if (sdio_set_host_pm_flags(sdiodev->func[1], sdio_flags))
-			brcmf_err("Failed to set pm_flags %x\n", sdio_flags);
+			sdio_flags |= MMC_PM_WAKE_SDIO_IRQ;
 	}
+	if (sdio_set_host_pm_flags(sdiodev->func[1], sdio_flags))
+		brcmf_err("Failed to set pm_flags %x\n", sdio_flags);
 	return 0;
 }
 
@@ -1305,7 +1316,15 @@ static int __init brcmf_sdio_pd_probe(struct platform_device *pdev)
 
 static int brcmf_sdio_pd_remove(struct platform_device *pdev)
 {
+
 	brcmf_dbg(SDIO, "Enter\n");
+
+	/*rstc = reset_control_get(&pdev->dev, NULL);
+	struct reset_control *rstc;
+	if (rstc) {
+		reset_control_assert(rstc);
+	}*/
+
 
 	if (brcmfmac_sdio_pdata->power_off)
 		brcmfmac_sdio_pdata->power_off();
@@ -1315,10 +1334,22 @@ static int brcmf_sdio_pd_remove(struct platform_device *pdev)
 	return 0;
 }
 
+#ifdef CONFIG_OF
+static const struct of_device_id brcmfmac_of_table[] = {
+	       { .compatible = "brcm,bcm4329-fmac" },
+	       {}
+	};
+MODULE_DEVICE_TABLE(of, brcmfmac_of_table);
+#endif
+
+
 static struct platform_driver brcmf_sdio_pd = {
 	.remove		= brcmf_sdio_pd_remove,
 	.driver		= {
 		.name	= BRCMFMAC_SDIO_PDATA_NAME,
+#ifdef CONFIG_OF
+		.of_match_table = of_match_ptr(brcmfmac_of_table),
+#endif
 	}
 };
 
